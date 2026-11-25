@@ -1,0 +1,23 @@
+{
+  "name": "agent-security-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Security Runtime — OpenShell + Skill scan + Policy + Tev1 for multi-agent protection",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @asr/server & npm run dev -w @asr/web",
+    "dev:server": "npm run dev -w @asr/server",
+    "dev:web": "npm run dev -w @asr/web",
+    "build": "npm run build -w @asr/core && npm run build -w @asr/server && npm run build -w @asr/web",
+    "start": "npm run start -w @asr/server",
+    "install:asr": "bash scripts/install.sh",
+    "build:deb": "bash scripts/build-deb.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Agent Security Runtime
+Comment=Install journey & security console for multi-agent runtimes
+Exec=asr-setup
+Icon=security-high
+Terminal=false
+Categories=System;Security;
+Keywords=agent;security;runtime;asr;
+StartupNotify=true

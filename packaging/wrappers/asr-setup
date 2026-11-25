@@ -1,0 +1,68 @@
+#!/bin/bash
+# Agent Security Runtime — installer journey launcher
+set -euo pipefail
+
+ASR_ROOT="${ASR_ROOT:-/usr/lib/agent-security-runtime}"
+export ASR_POLICY="${ASR_POLICY:-/etc/agent-security-runtime/policy.yaml}"
+export ASR_STATE="${ASR_STATE:-$HOME/.asr/state.json}"
+export ASR_PORT="${ASR_PORT:-8787}"
+export PATH="${HOME}/.local/node/bin:${HOME}/.local/ollama/bin:/usr/local/bin:$PATH"
+if [[ -d "${HOME}/.local/ollama/lib/ollama" ]]; then
+  export LD_LIBRARY_PATH="${HOME}/.local/ollama/lib/ollama:${LD_LIBRARY_PATH:-}"
+fi
+
+mkdir -p "$(dirname "$ASR_STATE")"
+
+# Reset wizard so next open shows the install journey
+cat >"$ASR_STATE" <<EOF
+{
+  "version": 1,
+  "installCompleted": false,
+  "completedAt": null,
+  "currentStep": "welcome",
+  "profile": "balanced",
+  "steps": {
+    "welcome": false,
+    "environment": false,
+    "model": false,
+    "agents": false,
+    "policy": false,
+    "finish": false
+  }
+}
+EOF
+
+# Optional: ensure tev model via bundled helper (non-fatal)
+if command -v ollama >/dev/null 2>&1; then
+  if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    nohup ollama serve >/dev/null 2>&1 &
+    sleep 1
+  fi
+  if ! ollama list 2>/dev/null | grep -q '^tev1:0.8b[[:space:]]'; then
+    echo "正在拉取 tev1:0.8b（约 833MB）…"
+    ollama pull tev1:0.8b || true
+  fi
+fi
+
+URL="http://127.0.0.1:${ASR_PORT}/"
+echo "启动 Agent Security Runtime 安装旅途 → $URL"
+
+if curl -sf "http://127.0.0.1:${ASR_PORT}/api/health" >/dev/null 2>&1; then
+  :
+else
+  nohup env ASR_POLICY="$ASR_POLICY" ASR_STATE="$ASR_STATE" ASR_PORT="$ASR_PORT" \
+    PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+    node "$ASR_ROOT/apps/server/dist/index.js" \
+    >/tmp/asr-server.log 2>&1 &
+  echo $! >"${XDG_RUNTIME_DIR:-/tmp}/asr-server.pid"
+  for _ in $(seq 1 40); do
+    curl -sf "http://127.0.0.1:${ASR_PORT}/api/health" >/dev/null && break
+    sleep 0.25
+  done
+fi
+
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$URL" >/dev/null 2>&1 || true
+fi
+
+echo "打开浏览器完成安装向导：$URL"

@@ -1,0 +1,41 @@
+version: 1
+product: agent-security-runtime
+
+modules:
+  toolSecurity: true
+  policyEngine: true
+  riskAssessment: true
+  sandboxIsolation: true
+  sensitiveData: false
+
+tev:
+  enabled: true
+  model: tev1:0.8b
+  endpoint: http://127.0.0.1:11434/v1/systemone
+  # 0.8B 召回偏弱，阈值略低；可按误报再调
+  blockThreshold: 0.35
+  askThreshold: 0.2
+
+tools:
+  deny:
+    - rm_rf
+    - format_disk
+  ask:
+    - bash
+    - shell
+    - exec
+    - terminal
+    - write_file
+  allow:
+    - "*"
+
+skills:
+  blockOnSeverity: high
+
+openshell:
+  requiredFor:
+    - bash
+    - shell
+    - exec
+    - terminal
+  policyFile: ../openshell-dsh/policy.yaml

@@ -1,0 +1,27 @@
+#!/bin/bash
+# Agent Security Runtime — start control plane
+set -euo pipefail
+
+ASR_ROOT="${ASR_ROOT:-/usr/lib/agent-security-runtime}"
+export ASR_POLICY="${ASR_POLICY:-/etc/agent-security-runtime/policy.yaml}"
+export ASR_STATE="${ASR_STATE:-$HOME/.asr/state.json}"
+export ASR_PORT="${ASR_PORT:-8787}"
+export PATH="${HOME}/.local/node/bin:${HOME}/.local/ollama/bin:/usr/local/bin:$PATH"
+if [[ -d "${HOME}/.local/ollama/lib/ollama" ]]; then
+  export LD_LIBRARY_PATH="${HOME}/.local/ollama/lib/ollama:${LD_LIBRARY_PATH:-}"
+fi
+
+mkdir -p "$(dirname "$ASR_STATE")"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "需要 Node.js ≥ 20。请先安装 Node，或把可执行文件放到 PATH。" >&2
+  exit 1
+fi
+
+if curl -sf "http://127.0.0.1:${ASR_PORT}/api/health" >/dev/null 2>&1; then
+  echo "Agent Security Runtime 已在运行 → http://127.0.0.1:${ASR_PORT}/"
+  exit 0
+fi
+
+cd "$ASR_ROOT"
+exec node "$ASR_ROOT/apps/server/dist/index.js"

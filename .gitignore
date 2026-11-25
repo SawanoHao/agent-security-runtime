@@ -1,0 +1,14 @@
+node_modules/
+dist/
+**/dist/
+!packaging/**
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+.turbo/
+*.tsbuildinfo
+*.deb
+packaging/.stage/

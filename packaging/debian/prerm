@@ -1,0 +1,16 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+  remove|upgrade|deconfigure)
+    if [ -f /var/lib/agent-security-runtime/server.pid ]; then
+      pid=$(cat /var/lib/agent-security-runtime/server.pid 2>/dev/null || true)
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+      fi
+      rm -f /var/lib/agent-security-runtime/server.pid
+    fi
+    ;;
+esac
+
+exit 0

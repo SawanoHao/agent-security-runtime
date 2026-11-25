@@ -1,0 +1,36 @@
+#!/bin/bash
+set -e
+
+ASR_LIB=/usr/lib/agent-security-runtime
+ASR_ETC=/etc/agent-security-runtime
+
+case "$1" in
+  configure)
+    mkdir -p /var/lib/agent-security-runtime
+    chmod 755 /usr/bin/asr /usr/bin/asr-setup 2>/dev/null || true
+
+    if [ ! -f /etc/agent-security-runtime/policy.yaml ] && [ -f "$ASR_ETC/policy.yaml" ]; then
+      :
+    fi
+
+    cat <<EOF
+
+  Agent Security Runtime 已安装。
+
+  完成用户旅途 / 启动控制面：
+    asr-setup
+
+  仅启动控制台：
+    asr
+
+  浏览器打开：
+    http://127.0.0.1:8787
+
+  决策模型（可选，安装器会引导）：
+    ollama pull tev1:0.8b
+
+EOF
+    ;;
+esac
+
+exit 0

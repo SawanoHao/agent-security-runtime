@@ -1,0 +1,16 @@
+Package: agent-security-runtime
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: curl, ca-certificates
+Recommends: docker.io
+Maintainer: SawanoHao <sawanohao@users.noreply.github.com>
+Homepage: https://github.com/SawanoHao/agent-security-runtime
+Description: Agent Security Runtime control plane
+ Ubuntu security runtime for multi-agent setups (DSH / OpenClaw / Hermes).
+ Provides OpenShell bridging, YAML policy, skill scanning, Tev1-0.8B risk
+ screening, an installer journey, and a local WebUI console on :8787.
+ .
+ Installs CLI wrappers `asr` and `asr-setup`. First launch opens the
+ setup wizard at http://127.0.0.1:8787 .
