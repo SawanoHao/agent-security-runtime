@@ -111,6 +111,59 @@ export interface OpenShellStatus {
   error?: string;
 }
 
+export interface OpenShellNetworkEndpoint {
+  host: string;
+  port: number;
+  allow_encoded_slash?: boolean;
+}
+
+export interface OpenShellNetworkRule {
+  name: string;
+  endpoints: OpenShellNetworkEndpoint[];
+  binaries: { path: string }[];
+}
+
+export interface OpenShellSandboxPolicy {
+  version: 1;
+  filesystem_policy?: {
+    include_workdir?: boolean;
+    read_only?: string[];
+    read_write?: string[];
+  };
+  landlock?: {
+    compatibility?: string;
+  };
+  network_policies?: Record<string, Omit<OpenShellNetworkRule, "name"> & { name?: string }>;
+}
+
+export interface OpenShellPolicyRevision {
+  version: number;
+  hash?: string;
+  status?: string;
+  scope?: string;
+  sandbox?: string;
+  createdAtMs?: number;
+  loadedAtMs?: number;
+}
+
+export interface OpenShellPolicySnapshot {
+  sandbox: string;
+  policyFile: string | null;
+  fileExists: boolean;
+  filePolicy: OpenShellSandboxPolicy | null;
+  fileText: string | null;
+  live: {
+    version?: number;
+    hash?: string;
+    status?: string;
+    scope?: string;
+    policy: OpenShellSandboxPolicy | null;
+    error?: string;
+  };
+  revisions: OpenShellPolicyRevision[];
+  openshell: OpenShellStatus;
+}
+
 export interface TevStatus {
   endpoint: string;
   model: string;

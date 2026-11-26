@@ -16,18 +16,20 @@ import {
   Activity,
   BookOpen,
   Bot,
+  Box as LucideBox,
   Crosshair,
   LayoutDashboard,
   RefreshCw,
   Settings,
   Shield,
 } from "lucide-vue-next";
+import OpenShellPanel from "./OpenShellPanel.vue";
 import OverviewPanel from "./OverviewPanel.vue";
 import type { RuntimeStatus } from "./types";
 
 const emit = defineEmits<{ reinstall: [] }>();
 
-type View = "overview" | "agents" | "gate" | "activity" | "system";
+type View = "overview" | "agents" | "gate" | "activity" | "openshell" | "system";
 
 const view = ref<View>("overview");
 const status = ref<RuntimeStatus | null>(null);
@@ -46,6 +48,7 @@ const titles: Record<View, { title: string; hint: string }> = {
   agents: { title: "Agents", hint: "已检测到的 Agent 运行时" },
   gate: { title: "Gate Lab", hint: "Tev1 + 策略即时评估" },
   activity: { title: "决策流", hint: "最近安全决策" },
+  openshell: { title: "OpenShell", hint: "沙箱网络白名单与文件系统策略" },
   system: { title: "系统", hint: "策略、安装与 OpenShell" },
 };
 
@@ -54,6 +57,7 @@ const nav: { id: View; label: string; icon: unknown }[] = [
   { id: "agents", label: "Agents", icon: Bot },
   { id: "gate", label: "Gate Lab", icon: Crosshair },
   { id: "activity", label: "决策流", icon: Activity },
+  { id: "openshell", label: "OpenShell", icon: LucideBox },
   { id: "system", label: "系统", icon: Settings },
 ];
 
@@ -192,7 +196,7 @@ onUnmounted(() => window.clearInterval(timer));
             <div class="help-pop">
               <strong>{{ status?.product ?? "Agent Security Runtime" }}</strong>
               <p>
-                总览展示模块健康与最近决策。Gate Lab 用 Tev1 和策略做即时评估。系统页可查看策略文件、扫描 Skills，并重新进入安装向导。
+                总览展示模块健康与最近决策。Gate Lab 用 Tev1 和策略做即时评估。OpenShell 页可编辑沙箱网络白名单。系统页可查看策略文件、扫描 Skills，并重新进入安装向导。
               </p>
               <p class="mono">{{ status?.policyPath || "策略文件尚未加载" }}</p>
               <p>当前版本 v{{ status?.version ?? "—" }}</p>
@@ -207,6 +211,11 @@ onUnmounted(() => window.clearInterval(timer));
           v-if="view === 'overview'"
           :status="status"
           @navigate="(target) => (view = target)"
+        />
+
+        <OpenShellPanel
+          v-if="view === 'openshell'"
+          :sandboxes="status?.openshell.sandboxes"
         />
 
         <el-row v-if="view === 'system'" :gutter="16" class="kpi-row">
@@ -384,6 +393,7 @@ onUnmounted(() => window.clearInterval(timer));
                   ? status.openshell.sandboxes.map((s) => `${s.name}:${s.phase}`).join(", ")
                   : "无"
               }}
+              <el-button style="margin-left: 12px" @click="view = 'openshell'">配置 OpenShell 策略</el-button>
             </el-descriptions-item>
           </el-descriptions>
         </el-card>

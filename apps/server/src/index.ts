@@ -3,11 +3,16 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import {
   AgentSecurityRuntime,
   advanceSetup,
+  applyOpenShellPolicyFile,
   getPullJob,
+  loadOpenShellPolicySnapshot,
   loadSetupState,
+  normalizeOpenShellPolicy,
   resetSetup,
   runSetupChecks,
   startModelPull,
+  writeOpenShellPolicyFile,
+  type OpenShellSandboxPolicy,
   type PolicyProfile,
   type SetupStepId,
 } from "@asr/core";
@@ -129,6 +134,103 @@ app.post("/api/scan/skills", async (c) => {
   const scanRoot = body.root ?? join(process.env.HOME ?? "", ".dsh");
   const result = runtime.scanSkillTree(scanRoot);
   return c.json(result);
+});
+
+app.get("/api/openshell/policy", async (c) => {
+  const sandbox = c.req.query("sandbox") || undefined;
+  const snapshot = await loadOpenShellPolicySnapshot({
+    asrPolicyPath: policyPath,
+    configuredPolicyFile: runtime.policy.openshell.policyFile,
+    sandbox,
+  });
+  return c.json(snapshot);
+});
+
+app.put("/api/openshell/policy", async (c) => {
+  const body = await c.req.json<{
+    sandbox?: string;
+    policy: OpenShellSandboxPolicy;
+    apply?: boolean;
+    wait?: boolean;
+  }>();
+  if (!body?.policy) return c.json({ error: "policy required" }, 400);
+
+  const snapshot = await loadOpenShellPolicySnapshot({
+    asrPolicyPath: policyPath,
+    configuredPolicyFile: runtime.policy.openshell.policyFile,
+    sandbox: body.sandbox,
+  });
+  if (!snapshot.policyFile) {
+    return c.json({ error: "OpenShell policy file path unresolved" }, 400);
+  }
+
+  const normalized = normalizeOpenShellPolicy(body.policy);
+  const text = writeOpenShellPolicyFile(snapshot.policyFile, normalized);
+
+  let applyResult: { ok: boolean; stdout: string; stderr: string } | undefined;
+  if (body.apply) {
+    applyResult = await applyOpenShellPolicyFile({
+      sandbox: body.sandbox?.trim() || snapshot.sandbox,
+      policyFile: snapshot.policyFile,
+      wait: body.wait !== false,
+    });
+    if (!applyResult.ok) {
+      return c.json(
+        {
+          error: applyResult.stderr || applyResult.stdout || "apply failed",
+          policyFile: snapshot.policyFile,
+          text,
+          apply: applyResult,
+        },
+        502,
+      );
+    }
+  }
+
+  const next = await loadOpenShellPolicySnapshot({
+    asrPolicyPath: policyPath,
+    configuredPolicyFile: runtime.policy.openshell.policyFile,
+    sandbox: body.sandbox?.trim() || snapshot.sandbox,
+  });
+  return c.json({ ...next, text, apply: applyResult });
+});
+
+app.post("/api/openshell/policy/apply", async (c) => {
+  const body = await c.req.json<{
+    sandbox?: string;
+    wait?: boolean;
+  }>().catch(() => ({} as { sandbox?: string; wait?: boolean }));
+
+  const snapshot = await loadOpenShellPolicySnapshot({
+    asrPolicyPath: policyPath,
+    configuredPolicyFile: runtime.policy.openshell.policyFile,
+    sandbox: body.sandbox,
+  });
+  if (!snapshot.policyFile || !snapshot.fileExists) {
+    return c.json({ error: "policy file missing" }, 404);
+  }
+
+  const applyResult = await applyOpenShellPolicyFile({
+    sandbox: body.sandbox?.trim() || snapshot.sandbox,
+    policyFile: snapshot.policyFile,
+    wait: body.wait !== false,
+  });
+  if (!applyResult.ok) {
+    return c.json(
+      {
+        error: applyResult.stderr || applyResult.stdout || "apply failed",
+        apply: applyResult,
+      },
+      502,
+    );
+  }
+
+  const next = await loadOpenShellPolicySnapshot({
+    asrPolicyPath: policyPath,
+    configuredPolicyFile: runtime.policy.openshell.policyFile,
+    sandbox: body.sandbox?.trim() || snapshot.sandbox,
+  });
+  return c.json({ ...next, apply: applyResult });
 });
 
 function applyPolicyProfile(profile: PolicyProfile) {

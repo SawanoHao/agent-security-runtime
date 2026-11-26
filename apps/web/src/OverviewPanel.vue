@@ -22,7 +22,7 @@ import type { Decision, RuntimeStatus } from "./types";
 
 const props = defineProps<{ status: RuntimeStatus | null }>();
 const emit = defineEmits<{
-  navigate: [view: "agents" | "gate" | "activity" | "system"];
+  navigate: [view: "agents" | "gate" | "activity" | "system" | "openshell"];
 }>();
 
 const activeModuleId = ref<string | null>(null);
@@ -208,7 +208,9 @@ function openModule(id: string) {
 }
 
 function configureTarget(id: string) {
-  return id === "riskAssessment" ? "gate" : "system";
+  if (id === "riskAssessment") return "gate";
+  if (id === "sandboxIsolation") return "openshell";
+  return "system";
 }
 
 function goConfigure() {
@@ -386,11 +388,19 @@ function goConfigure() {
           {{
             activeModule.id === "riskAssessment"
               ? "风险评估的模型与端点可在 Gate Lab 的感知栈中查看，并用提示词做即时评估。"
-              : "策略档位、安装状态和 OpenShell 信息在系统页查看。调整档位会重新进入安装向导。"
+              : activeModule.id === "sandboxIsolation"
+                ? "OpenShell 策略页可查看沙箱生效规则，并编辑网络白名单与文件系统权限。"
+                : "策略档位、安装状态和 OpenShell 信息在系统页查看。调整档位会重新进入安装向导。"
           }}
         </p>
         <button type="button" class="use-btn drawer-action" @click="goConfigure">
-          {{ activeModule.id === "riskAssessment" ? "前往 Gate Lab" : "前往系统配置" }}
+          {{
+            activeModule.id === "riskAssessment"
+              ? "前往 Gate Lab"
+              : activeModule.id === "sandboxIsolation"
+                ? "前往 OpenShell 策略"
+                : "前往系统配置"
+          }}
           <ChevronRight :size="16" />
         </button>
       </template>
