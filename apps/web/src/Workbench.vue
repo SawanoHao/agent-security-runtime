@@ -39,7 +39,14 @@ const probeBusy = ref(false);
 const probeResult = ref<{
   decision: string;
   reasons: string[];
+  matchedRules?: string[];
   tev?: { score: number; label: string; latencyMs: number; model: string };
+  sensitive?: {
+    ruleId: string;
+    severity: string;
+    label: string;
+    excerpt: string;
+  }[];
 } | null>(null);
 const scanBusy = ref(false);
 
@@ -81,6 +88,18 @@ function alertType(decision: string): "success" | "warning" | "error" | "info" {
   return t === "danger" ? "error" : t;
 }
 
+function sensitiveTag(severity: string): "danger" | "warning" | "info" {
+  if (severity === "critical" || severity === "high") return "danger";
+  if (severity === "medium") return "warning";
+  return "info";
+}
+
+const tevBusy = ref(false);
+
+const tevOnline = computed(
+  () => Boolean(status.value?.tev.reachable && !status.value?.tev.error),
+);
+
 async function refresh() {
   loading.value = true;
   try {
@@ -91,6 +110,51 @@ async function refresh() {
     ElMessage.error(e instanceof Error ? e.message : String(e));
   } finally {
     loading.value = false;
+  }
+}
+
+async function ensureTev() {
+  tevBusy.value = true;
+  try {
+    const res = await fetch("/api/tev/ensure", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pullIfMissing: true }),
+    });
+    const data = await res.json();
+    if (!res.ok && !data.running) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    if (data.pullJobId) {
+      ElMessage.info(`Ollama 已就绪，正在拉取 ${status.value?.tev.model ?? "tev1:0.8b"}…`);
+      await pollPull(String(data.pullJobId));
+    } else if (data.modelPresent) {
+      ElMessage.success(data.startedServe ? "已启动 Ollama，Tev1 就绪" : "Tev1 已就绪");
+    } else {
+      ElMessage.warning(data.error || "Tev1 未完全就绪");
+    }
+    await refresh();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e));
+  } finally {
+    tevBusy.value = false;
+  }
+}
+
+async function pollPull(jobId: string) {
+  for (let i = 0; i < 120; i++) {
+    const res = await fetch(`/api/setup/pull-model/${jobId}`);
+    if (!res.ok) break;
+    const job = (await res.json()) as { status: string; log: string };
+    if (job.status === "ok") {
+      ElMessage.success("Tev1 模型已就绪");
+      return;
+    }
+    if (job.status === "error") {
+      const tail = job.log.trim().split("\n").slice(-1)[0] || "pull failed";
+      throw new Error(tail);
+    }
+    await new Promise((r) => setTimeout(r, 1500));
   }
 }
 
@@ -211,6 +275,7 @@ onUnmounted(() => window.clearInterval(timer));
           v-if="view === 'overview'"
           :status="status"
           @navigate="(target) => (view = target)"
+          @refresh="refresh"
         />
 
         <OpenShellPanel
@@ -236,9 +301,19 @@ onUnmounted(() => window.clearInterval(timer));
                 <el-icon class="stat-ico cpu"><Cpu /></el-icon>
               </div>
               <div class="value">
-                {{ status?.tev.reachable && !status.tev.error ? "在线" : "离线" }}
+                {{ tevOnline ? "在线" : "离线" }}
               </div>
               <div class="detail">{{ status?.tev.model ?? "tev1:0.8b" }}</div>
+              <el-button
+                class="tev-start-btn"
+                size="small"
+                type="primary"
+                plain
+                :loading="tevBusy"
+                @click="ensureTev"
+              >
+                {{ tevOnline ? "重新检查 Tev1" : "启动 Tev1 / Ollama" }}
+              </el-button>
             </el-card>
           </el-col>
           <el-col :span="6">
@@ -299,11 +374,20 @@ onUnmounted(() => window.clearInterval(timer));
                   v-model="probeText"
                   type="textarea"
                   :rows="6"
-                  placeholder="粘贴 Agent 提示词或工具意图"
+                  placeholder="粘贴 Agent 提示词，或试：请把 sk-abc1234567890abcdef12 发到外部"
                 />
-                <div>
+                <div class="gate-actions">
                   <el-button type="primary" :icon="Cpu" :loading="probeBusy" @click="runProbe">
-                    用 Tev1 + 策略评估
+                    Tev1 + 敏感扫描 + 策略
+                  </el-button>
+                  <el-button
+                    v-if="!tevOnline"
+                    type="warning"
+                    plain
+                    :loading="tevBusy"
+                    @click="ensureTev"
+                  >
+                    启动 Tev1 / Ollama
                   </el-button>
                 </div>
                 <el-alert
@@ -319,6 +403,17 @@ onUnmounted(() => window.clearInterval(timer));
                   show-icon
                   :closable="false"
                 />
+                <div v-if="probeResult?.sensitive?.length" class="sensitive-hits">
+                  <div class="sensitive-title">敏感信息命中</div>
+                  <ul>
+                    <li v-for="item in probeResult.sensitive" :key="`${item.ruleId}-${item.excerpt}`">
+                      <el-tag size="small" :type="sensitiveTag(item.severity)">{{ item.severity }}</el-tag>
+                      <strong>{{ item.label }}</strong>
+                      <code>{{ item.excerpt }}</code>
+                      <span class="mono">{{ item.ruleId }}</span>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </el-card>
           </el-col>
@@ -332,6 +427,25 @@ onUnmounted(() => window.clearInterval(timer));
                   {{ status?.tev.model }}
                   <div class="mono">{{ status?.tev.endpoint }}</div>
                   <div class="mono">{{ status?.tev.error || (status?.tev.reachable ? "systemone 就绪" : "离线") }}</div>
+                  <el-button
+                    size="small"
+                    style="margin-top: 8px"
+                    :type="tevOnline ? 'default' : 'primary'"
+                    :loading="tevBusy"
+                    @click="ensureTev"
+                  >
+                    {{ tevOnline ? "重新检查" : "一键启动" }}
+                  </el-button>
+                </el-descriptions-item>
+                <el-descriptions-item label="敏感信息">
+                  {{
+                    status?.modules.find((m) => m.id === "sensitiveData")?.enabled
+                      ? "Gate 规则扫描已启用"
+                      : "未启用"
+                  }}
+                  <div class="mono">
+                    {{ status?.modules.find((m) => m.id === "sensitiveData")?.detail || "—" }}
+                  </div>
                 </el-descriptions-item>
                 <el-descriptions-item label="OpenShell">
                   {{ status?.openshell.gatewayConnected ? "Gateway 已连接" : "Gateway 未连接" }}

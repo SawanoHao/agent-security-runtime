@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import type { Decision, PolicyDecision, PromptEvent, ToolCallEvent, TevVerdict } from "./types.js";
+import { highestSensitiveSeverity } from "./sensitive-scan.js";
+import type {
+  Decision,
+  PolicyDecision,
+  PromptEvent,
+  SensitiveFinding,
+  ToolCallEvent,
+  TevVerdict,
+} from "./types.js";
 
 const PolicySchema = z.object({
   version: z.literal(1),
@@ -37,6 +45,15 @@ const PolicySchema = z.object({
       blockOnSeverity: z
         .enum(["low", "medium", "high", "critical"])
         .default("high"),
+    })
+    .default({}),
+  /** Layer-1 secret/PII rules applied in gatePrompt / gateTool. */
+  sensitive: z
+    .object({
+      /** observe=记日志不改决策；ask=需确认；deny=直接拒绝 */
+      onMatch: z.enum(["observe", "ask", "deny"]).default("ask"),
+      /** critical 命中时至少升到该决策（仍受 onMatch 上限约束以外的抬升） */
+      criticalEscalation: z.enum(["ask", "deny"]).default("deny"),
     })
     .default({}),
   openshell: z
@@ -152,4 +169,59 @@ export function decidePrompt(
 
   if (reasons.length === 0) reasons.push("prompt allowed");
   return { decision, reasons, tev, matchedRules };
+}
+
+/** Merge layer-1 sensitive findings into an existing gate decision. */
+export function applySensitiveFindings(
+  policy: AsrPolicy,
+  base: PolicyDecision,
+  findings: SensitiveFinding[],
+): PolicyDecision {
+  if (!policy.modules.sensitiveData || findings.length === 0) {
+    return findings.length
+      ? { ...base, sensitive: findings }
+      : base;
+  }
+
+  const reasons = [...base.reasons];
+  const matchedRules = [...base.matchedRules];
+  let decision = base.decision;
+  const top = highestSensitiveSeverity(findings);
+  const labels = findings
+    .slice(0, 3)
+    .map((f) => `${f.label}(${f.excerpt})`)
+    .join("、");
+
+  matchedRules.push(`sensitive:${findings.map((f) => f.ruleId).join(",")}`);
+  reasons.push(`敏感信息命中 ${findings.length} 条：${labels}`);
+
+  const onMatch = policy.sensitive.onMatch;
+  if (onMatch === "ask") {
+    decision = worse(decision, "ask");
+    matchedRules.push("sensitive.ask");
+  } else if (onMatch === "deny") {
+    decision = worse(decision, "deny");
+    matchedRules.push("sensitive.deny");
+  } else {
+    matchedRules.push("sensitive.observe");
+  }
+
+  if (top === "critical" && onMatch !== "observe") {
+    decision = worse(decision, policy.sensitive.criticalEscalation);
+    matchedRules.push(`sensitive.critical:${policy.sensitive.criticalEscalation}`);
+    reasons.push(`critical 敏感命中 → ${policy.sensitive.criticalEscalation}`);
+  }
+
+  // Drop the generic "allowed" reason once we have a real hit.
+  const cleaned = reasons.filter(
+    (r) => r !== "prompt allowed" && r !== "default allow",
+  );
+
+  return {
+    ...base,
+    decision,
+    reasons: cleaned.length ? cleaned : reasons,
+    matchedRules,
+    sensitive: findings,
+  };
 }

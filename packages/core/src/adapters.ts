@@ -10,7 +10,7 @@ import type {
 
 /**
  * Every supported Agent implements the same hook surface.
- * Phase-1: DSH detection + passthrough hooks; OpenClaw/Hermes stubs.
+ * Phase-1: detection + passthrough hooks; deeper hooks land later.
  */
 export interface AgentAdapter {
   readonly id: string;
@@ -28,6 +28,15 @@ function exists(path: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function readTextIfExists(path: string): string | undefined {
+  try {
+    if (!exists(path)) return undefined;
+    return readFileSync(path, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -53,6 +62,40 @@ export class DshAdapter implements AgentAdapter {
       detected,
       version,
       path: found ?? (exists(profileDir) ? profileDir : undefined),
+    };
+  }
+}
+
+export class OpenCodeAdapter implements AgentAdapter {
+  readonly id = "opencode";
+  readonly kind = "opencode" as const;
+
+  detect(): AgentDescriptor {
+    const bins = [
+      "/usr/bin/ai.opencode",
+      "/opt/OpenCode/ai.opencode",
+      join(homedir(), ".local/bin/opencode"),
+      "/usr/local/bin/opencode",
+      "/opt/OpenCode/resources/opencode-cli",
+    ];
+    const dirs = [
+      join(homedir(), ".config/opencode"),
+      join(homedir(), ".local/share/opencode"),
+      join(homedir(), ".config/ai.opencode.desktop"),
+      "/opt/OpenCode",
+    ];
+    const foundBin = bins.find(exists);
+    const foundDir = dirs.find(exists);
+    const version =
+      readTextIfExists("/opt/OpenCode/resources/opencode-cli.version") ??
+      readTextIfExists(join(homedir(), ".local/share/opencode/version"));
+    return {
+      id: this.id,
+      name: "OpenCode",
+      kind: "opencode",
+      detected: Boolean(foundBin || foundDir),
+      version,
+      path: foundBin ?? foundDir,
     };
   }
 }
@@ -100,7 +143,12 @@ export class HermesAdapter implements AgentAdapter {
 }
 
 export function defaultAdapters(): AgentAdapter[] {
-  return [new DshAdapter(), new OpenClawAdapter(), new HermesAdapter()];
+  return [
+    new DshAdapter(),
+    new OpenCodeAdapter(),
+    new OpenClawAdapter(),
+    new HermesAdapter(),
+  ];
 }
 
 export function detectAgents(adapters: AgentAdapter[] = defaultAdapters()): AgentDescriptor[] {

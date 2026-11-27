@@ -193,6 +193,173 @@ export function findOllamaBin(): string | undefined {
   return undefined;
 }
 
+function ollamaProcessEnv(): NodeJS.ProcessEnv {
+  const libDir = join(homedir(), ".local/ollama/lib/ollama");
+  return {
+    ...process.env,
+    PATH: `${join(homedir(), ".local/ollama/bin")}:${process.env.PATH ?? ""}`,
+    LD_LIBRARY_PATH: existsSync(libDir)
+      ? `${libDir}:${process.env.LD_LIBRARY_PATH ?? ""}`
+      : process.env.LD_LIBRARY_PATH,
+  };
+}
+
+export async function probeOllamaServe(endpoint: string): Promise<{
+  running: boolean;
+  models: string[];
+  error?: string;
+}> {
+  const base = endpoint.replace(/\/v1\/systemone\/?$/, "");
+  try {
+    const res = await fetch(`${base}/api/tags`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) {
+      return { running: false, models: [], error: `HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as { models?: { name: string }[] };
+    return {
+      running: true,
+      models: (body.models ?? []).map((m) => m.name),
+    };
+  } catch (err) {
+    return {
+      running: false,
+      models: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export function startOllamaServe(): {
+  ok: boolean;
+  bin?: string;
+  alreadyRunning?: boolean;
+  error?: string;
+} {
+  const bin = findOllamaBin();
+  if (!bin) {
+    return {
+      ok: false,
+      error: "未找到 ollama，请先安装到 ~/.local/ollama",
+    };
+  }
+
+  const child = spawn(bin, ["serve"], {
+    env: ollamaProcessEnv(),
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  child.on("error", () => {
+    /* probed by caller */
+  });
+  return { ok: true, bin };
+}
+
+export async function ensureTevRuntime(opts: {
+  model: string;
+  endpoint: string;
+  pullIfMissing?: boolean;
+  waitMs?: number;
+}): Promise<{
+  ok: boolean;
+  bin?: string;
+  running: boolean;
+  modelPresent: boolean;
+  startedServe: boolean;
+  pullJobId?: string;
+  actions: string[];
+  error?: string;
+  models: string[];
+}> {
+  const actions: string[] = [];
+  const bin = findOllamaBin();
+  if (!bin) {
+    return {
+      ok: false,
+      running: false,
+      modelPresent: false,
+      startedServe: false,
+      actions,
+      error: "未找到 ollama 可执行文件（预期 ~/.local/ollama/bin/ollama）",
+      models: [],
+    };
+  }
+
+  let probe = await probeOllamaServe(opts.endpoint);
+  let startedServe = false;
+  if (!probe.running) {
+    const started = startOllamaServe();
+    if (!started.ok) {
+      return {
+        ok: false,
+        bin,
+        running: false,
+        modelPresent: false,
+        startedServe: false,
+        actions,
+        error: started.error,
+        models: [],
+      };
+    }
+    startedServe = true;
+    actions.push("started_ollama_serve");
+    const deadline = Date.now() + (opts.waitMs ?? 15000);
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      probe = await probeOllamaServe(opts.endpoint);
+      if (probe.running) break;
+    }
+  } else {
+    actions.push("ollama_already_running");
+  }
+
+  if (!probe.running) {
+    return {
+      ok: false,
+      bin,
+      running: false,
+      modelPresent: false,
+      startedServe,
+      actions,
+      error: probe.error ?? "ollama serve 启动超时",
+      models: [],
+    };
+  }
+
+  const modelPresent = probe.models.some(
+    (n) =>
+      n === opts.model ||
+      n === opts.model.replace(":0.8b", "") ||
+      n.startsWith(`${opts.model.split(":")[0]}:`),
+  );
+
+  let pullJobId: string | undefined;
+  if (!modelPresent && opts.pullIfMissing !== false) {
+    pullJobId = startModelPull(opts.model).jobId;
+    actions.push(`pull_started:${opts.model}`);
+  } else if (modelPresent) {
+    actions.push("model_ready");
+  }
+
+  return {
+    ok: modelPresent || Boolean(pullJobId),
+    bin,
+    running: true,
+    modelPresent,
+    startedServe,
+    pullJobId,
+    actions,
+    models: probe.models,
+    error: modelPresent
+      ? undefined
+      : pullJobId
+        ? `模型 ${opts.model} 正在拉取`
+        : `模型 ${opts.model} 未安装`,
+  };
+}
+
 /** Fire-and-forget model pull; returns immediately with a job id tracked in memory. */
 const pullJobs = new Map<
   string,
@@ -206,14 +373,7 @@ export function getPullJob(id: string) {
 export function startModelPull(model: string): { jobId: string } {
   const jobId = `pull-${Date.now()}`;
   const bin = findOllamaBin() ?? "ollama";
-  const libDir = join(homedir(), ".local/ollama/lib/ollama");
-  const env = {
-    ...process.env,
-    PATH: `${join(homedir(), ".local/ollama/bin")}:${process.env.PATH ?? ""}`,
-    LD_LIBRARY_PATH: existsSync(libDir)
-      ? `${libDir}:${process.env.LD_LIBRARY_PATH ?? ""}`
-      : process.env.LD_LIBRARY_PATH,
-  };
+  const env = ollamaProcessEnv();
 
   pullJobs.set(jobId, {
     status: "running",

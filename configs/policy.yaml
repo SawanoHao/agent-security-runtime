@@ -6,7 +6,7 @@ modules:
   policyEngine: true
   riskAssessment: true
   sandboxIsolation: true
-  sensitiveData: false
+  sensitiveData: true
 
 tev:
   enabled: true
@@ -15,6 +15,11 @@ tev:
   # 0.8B 召回偏弱，阈值略低；可按误报再调
   blockThreshold: 0.35
   askThreshold: 0.2
+
+# Gate 第 1 层：密钥 / PII 规则扫描
+sensitive:
+  onMatch: ask
+  criticalEscalation: deny
 
 tools:
   deny:

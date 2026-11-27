@@ -40,17 +40,26 @@ export interface PromptEvent {
   text: string;
 }
 
+export interface SensitiveFinding {
+  ruleId: string;
+  severity: "low" | "medium" | "high" | "critical";
+  label: string;
+  excerpt: string;
+}
+
 export interface PolicyDecision {
   decision: Decision;
   reasons: string[];
   tev?: TevVerdict;
   matchedRules: string[];
+  /** Present when sensitiveData module scanned the payload. */
+  sensitive?: SensitiveFinding[];
 }
 
 export interface AgentDescriptor {
   id: string;
   name: string;
-  kind: "dsh" | "openclaw" | "hermes" | "unknown";
+  kind: "dsh" | "opencode" | "openclaw" | "hermes" | "unknown";
   detected: boolean;
   version?: string;
   path?: string;

@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { detectAgents, defaultAdapters } from "./adapters.js";
 import { probeOpenShell } from "./openshell.js";
-import { decidePrompt, decideToolCall, loadPolicy, type AsrPolicy } from "./policy.js";
+import {
+  applySensitiveFindings,
+  decidePrompt,
+  decideToolCall,
+  loadPolicy,
+  type AsrPolicy,
+} from "./policy.js";
+import { scanSensitiveText } from "./sensitive-scan.js";
 import { scanSkills, shouldBlockSkills } from "./skill-scan.js";
 import { defaultStatePath, loadSetupState } from "./setup.js";
 import { TevClient } from "./tev.js";
@@ -73,7 +80,9 @@ export class AgentSecurityRuntime {
         name: "敏感信息保护",
         enabled: this.policy.modules.sensitiveData,
         healthy: true,
-        detail: "phase-2",
+        detail: this.policy.modules.sensitiveData
+          ? `Gate 规则扫描 · onMatch=${this.policy.sensitive.onMatch}`
+          : "未启用 · 可拦截密钥/PII 外泄",
       },
     ];
 
@@ -95,30 +104,46 @@ export class AgentSecurityRuntime {
       this.policy.modules.riskAssessment && this.policy.tev.enabled
         ? await this.tev.evaluate(event.text)
         : undefined;
-    const decision = decidePrompt(this.policy, event, tev);
+    let decision = decidePrompt(this.policy, event, tev);
+    if (this.policy.modules.sensitiveData) {
+      decision = applySensitiveFindings(
+        this.policy,
+        decision,
+        scanSensitiveText(event.text),
+      );
+    }
     this.record({
       agentId: event.agentId,
       kind: "prompt",
       decision: decision.decision,
-      summary: event.text.slice(0, 120),
+      summary: summarizeGate(event.text, decision),
       score: tev?.score,
     });
     return decision;
   }
 
   async gateTool(event: ToolCallEvent): Promise<PolicyDecision> {
+    const payload = `tool=${event.toolName}\nargs=${event.argsSummary}`;
     const tev =
       this.policy.modules.riskAssessment && this.policy.tev.enabled
-        ? await this.tev.evaluate(
-            `tool=${event.toolName}\nargs=${event.argsSummary}`,
-          )
+        ? await this.tev.evaluate(payload)
         : undefined;
-    const decision = decideToolCall(this.policy, event, tev);
+    let decision = decideToolCall(this.policy, event, tev);
+    if (this.policy.modules.sensitiveData) {
+      decision = applySensitiveFindings(
+        this.policy,
+        decision,
+        scanSensitiveText(payload),
+      );
+    }
     this.record({
       agentId: event.agentId,
       kind: "tool",
       decision: decision.decision,
-      summary: `${event.toolName} ${event.argsSummary}`.slice(0, 160),
+      summary: summarizeGate(
+        `${event.toolName} ${event.argsSummary}`.slice(0, 160),
+        decision,
+      ),
       score: tev?.score,
     });
     return decision;
@@ -151,4 +176,11 @@ export class AgentSecurityRuntime {
     });
     if (this.decisions.length > this.maxDecisions) this.decisions.length = this.maxDecisions;
   }
+}
+
+function summarizeGate(text: string, decision: PolicyDecision): string {
+  const hit = decision.sensitive?.length
+    ? ` · 敏感×${decision.sensitive.length}`
+    : "";
+  return `${text.slice(0, 100)}${hit}`;
 }

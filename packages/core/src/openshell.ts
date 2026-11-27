@@ -279,6 +279,112 @@ export async function applyOpenShellPolicyFile(options: {
   return run("openshell", args, (options.timeoutSec ?? 60) * 1000 + 5000);
 }
 
+export interface OpenShellLogLine {
+  raw: string;
+  /** Original timestamp token from openshell (often unix seconds). */
+  ts?: string;
+  /** Human-readable local time derived from `ts`. */
+  at?: string;
+  source?: string;
+  level?: string;
+  message: string;
+  kind: "network" | "policy" | "ssh" | "other";
+}
+
+export async function fetchOpenShellLogs(options: {
+  sandbox?: string;
+  lines?: number;
+  level?: string;
+  source?: string;
+  since?: string;
+  /** Keep noisy SSH channel chatter. Default false. */
+  includeSsh?: boolean;
+}): Promise<{
+  ok: boolean;
+  sandbox: string;
+  raw: string;
+  lines: OpenShellLogLine[];
+  error?: string;
+}> {
+  const sandbox = options.sandbox?.trim() || "dsh";
+  const fetchN = Math.max(options.lines ?? 200, options.includeSsh === false ? 400 : 200);
+  const args = ["logs", sandbox, "-n", String(fetchN)];
+  if (options.level) args.push("--level", options.level);
+  if (options.source) args.push("--source", options.source);
+  if (options.since) args.push("--since", options.since);
+
+  const result = await run("openshell", args, 12000);
+  const raw = (result.stdout || result.stderr || "").trim();
+  if (!result.ok && !raw) {
+    return {
+      ok: false,
+      sandbox,
+      raw: "",
+      lines: [],
+      error: result.stderr || "failed to read openshell logs",
+    };
+  }
+
+  let lines = raw
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => parseOpenShellLogLine(line));
+
+  if (options.includeSsh !== true) {
+    lines = lines.filter((line) => line.kind !== "ssh");
+  }
+
+  const limit = options.lines ?? 200;
+  if (lines.length > limit) lines = lines.slice(-limit);
+
+  return { ok: true, sandbox, raw, lines };
+}
+
+export function formatOpenShellTimestamp(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 1_000_000_000) {
+    // OpenShell emits unix seconds (optionally fractional).
+    const ms = n > 1e12 ? n : n * 1000;
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString("zh-CN", { hour12: false });
+    }
+  }
+  return raw;
+}
+
+function parseOpenShellLogLine(raw: string): OpenShellLogLine {
+  const m = raw.match(
+    /^\[(?<ts>[^\]]+)\]\s+\[(?<source>[^\]]+)\]\s+\[(?<level>[^\]]+)\]\s+(?<rest>.*)$/,
+  );
+  const message = m?.groups?.rest ?? raw;
+  const lower = message.toLowerCase();
+  let kind: OpenShellLogLine["kind"] = "other";
+  if (
+    /network|connect|dns|tcp|udp|egress|ingress|proxy|whitelist|allowlist|denied|blocked|unreachable|permission denied/.test(
+      lower,
+    )
+  ) {
+    kind = "network";
+  } else if (/policy|landlock|filesystem|seccomp/.test(lower)) {
+    kind = "policy";
+  } else if (/ssh|channel/.test(lower)) {
+    kind = "ssh";
+  }
+  const ts = m?.groups?.ts;
+  return {
+    raw,
+    ts,
+    at: formatOpenShellTimestamp(ts),
+    source: m?.groups?.source,
+    level: m?.groups?.level?.trim(),
+    message,
+    kind,
+  };
+}
+
 export async function loadOpenShellPolicySnapshot(options: {
   asrPolicyPath: string;
   configuredPolicyFile?: string;

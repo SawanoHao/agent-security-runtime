@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Box,
@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  ScrollText,
   Shield,
   Trash2,
   Upload,
@@ -89,6 +90,23 @@ const readWriteText = ref("");
 const includeWorkdir = ref(true);
 const yamlText = ref("");
 const showYaml = ref(false);
+const logsLoading = ref(false);
+const logsError = ref("");
+const denyOnly = ref(false);
+const autoRefreshLogs = ref(false);
+const logLines = ref<
+  {
+    raw: string;
+    ts?: string;
+    at?: string;
+    source?: string;
+    level?: string;
+    message: string;
+    kind: "network" | "policy" | "ssh" | "other";
+  }[]
+>([]);
+const denyCount = ref(0);
+let logsTimer: ReturnType<typeof setInterval> | null = null;
 
 const presets = [
   { name: "news_hn", host: "news.ycombinator.com", port: 443 },
@@ -113,6 +131,16 @@ const sandboxOptions = computed(() => {
 });
 
 const gatewayOk = computed(() => snapshot.value?.openshell.gatewayConnected === true);
+
+const visibleLogs = computed(() => {
+  if (!denyOnly.value) return logLines.value;
+  return logLines.value.filter(
+    (line) =>
+      line.kind === "network" ||
+      line.kind === "policy" ||
+      /denied|blocked|reject|unreachable|permission denied/i.test(line.message),
+  );
+});
 
 function policyToRows(policy: PolicyDoc | null | undefined): NetworkRuleRow[] {
   const next: NetworkRuleRow[] = [];
@@ -311,14 +339,51 @@ function stamp(ms?: number) {
   return new Date(ms).toLocaleString();
 }
 
+async function loadLogs() {
+  logsLoading.value = true;
+  logsError.value = "";
+  try {
+    const qs = new URLSearchParams({ n: "200" });
+    if (sandbox.value) qs.set("sandbox", sandbox.value);
+    const res = await fetch(`/api/openshell/logs?${qs.toString()}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    logLines.value = data.lines ?? [];
+    denyCount.value = Number(data.denyCount ?? 0);
+  } catch (error) {
+    logsError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    logsLoading.value = false;
+  }
+}
+
 watch(sandbox, (value, old) => {
   if (value && old && value !== old && snapshot.value) {
     void loadSnapshot(value);
+    void loadLogs();
+  }
+});
+
+watch(autoRefreshLogs, (on) => {
+  if (logsTimer) {
+    clearInterval(logsTimer);
+    logsTimer = null;
+  }
+  if (on) {
+    void loadLogs();
+    logsTimer = setInterval(() => void loadLogs(), 8000);
   }
 });
 
 onMounted(() => {
   void loadSnapshot();
+  void loadLogs();
+});
+
+onUnmounted(() => {
+  if (logsTimer) clearInterval(logsTimer);
 });
 </script>
 
@@ -488,6 +553,46 @@ onMounted(() => {
       </header>
       <pre v-if="showYaml" class="yaml">{{ yamlText || "保存后可在此查看文件内容" }}</pre>
       <p v-else class="empty">当前编辑会在「保存文件 / 保存并应用」时写入磁盘策略，再通过 openshell policy set 推到沙箱。</p>
+    </section>
+
+    <section class="panel logs-panel" v-loading="logsLoading">
+      <header class="panel-head">
+        <h3><ScrollText :size="16" /> 沙箱审计日志</h3>
+        <div class="logs-tools">
+          <label class="toggle compact">
+            <el-switch v-model="denyOnly" size="small" />
+            仅网络/策略相关
+          </label>
+          <label class="toggle compact">
+            <el-switch v-model="autoRefreshLogs" size="small" />
+            自动刷新
+          </label>
+          <button type="button" class="ghost-btn" :disabled="logsLoading" @click="loadLogs">
+            <RefreshCw :size="15" />
+            拉取日志
+          </button>
+        </div>
+      </header>
+      <p class="logs-meta">
+        来源 <code>openshell logs {{ sandbox }}</code>
+        · 已过滤 SSH 噪声
+        · 最近 {{ logLines.length }} 行
+        · 网络/策略相关约 {{ denyCount }}
+      </p>
+      <p v-if="logsError" class="logs-error">{{ logsError }}</p>
+      <ul v-else-if="visibleLogs.length" class="log-list">
+        <li
+          v-for="(line, idx) in visibleLogs"
+          :key="`${line.ts}-${idx}`"
+          :class="['log-row', line.kind]"
+        >
+          <span class="log-kind">{{ line.kind }}</span>
+          <span class="log-ts" :title="line.ts || undefined">{{ line.at || line.ts || "—" }}</span>
+          <span class="log-src">{{ line.source || "—" }}</span>
+          <span class="log-msg">{{ line.message }}</span>
+        </li>
+      </ul>
+      <p v-else class="empty">暂无审计日志（SSH 通道噪声已隐藏）。在沙箱内触发一次被拒绝的网络请求后再刷新。</p>
     </section>
   </div>
 </template>
@@ -743,6 +848,84 @@ onMounted(() => {
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.logs-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.toggle.compact {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.logs-meta {
+  margin: 0 0 10px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.logs-meta code {
+  font-size: 11px;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.logs-error {
+  margin: 0;
+  color: #ea580c;
+  font-size: 13px;
+}
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #eef2f7;
+  border-radius: 12px;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 72px 168px 90px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.log-row:last-child {
+  border-bottom: 0;
+}
+
+.log-kind {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.log-row.network .log-kind { color: #ea580c; }
+.log-row.policy .log-kind { color: #7c3aed; }
+.log-row.ssh .log-kind { color: #0284c7; }
+
+.log-ts,
+.log-src {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.log-msg {
+  color: #334155;
+  word-break: break-word;
 }
 
 @media (max-width: 1100px) {

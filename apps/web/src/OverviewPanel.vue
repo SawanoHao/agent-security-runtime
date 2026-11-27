@@ -23,9 +23,12 @@ import type { Decision, RuntimeStatus } from "./types";
 const props = defineProps<{ status: RuntimeStatus | null }>();
 const emit = defineEmits<{
   navigate: [view: "agents" | "gate" | "activity" | "system" | "openshell"];
+  refresh: [];
 }>();
 
 const activeModuleId = ref<string | null>(null);
+const tevBusy = ref(false);
+const tevHint = ref("");
 
 const moduleIcon: Record<string, unknown> = {
   toolSecurity: ShieldCheck,
@@ -109,6 +112,64 @@ const feed = computed<FeedItem[]>(() => {
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
     .slice(0, 8);
 });
+
+const tevModule = computed(
+  () => props.status?.modules.find((item) => item.id === "riskAssessment") ?? null,
+);
+const tevDegraded = computed(() => {
+  const mod = tevModule.value;
+  return Boolean(mod?.enabled && !mod.healthy);
+});
+
+async function ensureTev() {
+  tevBusy.value = true;
+  tevHint.value = "正在启动 Ollama / 检查 Tev1…";
+  try {
+    const res = await fetch("/api/tev/ensure", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pullIfMissing: true }),
+    });
+    const data = await res.json();
+    if (!res.ok && !data.running) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const bits = [
+      data.startedServe ? "已启动 Ollama" : data.running ? "Ollama 已在运行" : null,
+      data.modelPresent ? "模型已就绪" : data.pullJobId ? "模型拉取中" : null,
+      data.error || null,
+    ].filter(Boolean);
+    tevHint.value = bits.join(" · ");
+    emit("refresh");
+    if (data.pullJobId) {
+      await pollPull(data.pullJobId);
+      emit("refresh");
+    }
+  } catch (error) {
+    tevHint.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    tevBusy.value = false;
+  }
+}
+
+async function pollPull(jobId: string) {
+  for (let i = 0; i < 120; i++) {
+    const res = await fetch(`/api/setup/pull-model/${jobId}`);
+    if (!res.ok) break;
+    const job = (await res.json()) as { status: string; log: string };
+    const tail = job.log.trim().split("\n").slice(-1)[0] || "";
+    tevHint.value = `拉取模型中… ${tail}`;
+    if (job.status === "ok") {
+      tevHint.value = "Tev1 模型已就绪";
+      return;
+    }
+    if (job.status === "error") {
+      tevHint.value = `模型拉取失败：${tail}`;
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
 
 const securityCopy = computed(() => {
   if (!props.status) {
@@ -234,6 +295,15 @@ function goConfigure() {
           <span v-if="protectedOk" class="ok-check" aria-hidden="true"><Check :size="14" /></span>
         </div>
         <p>{{ securityCopy.detail }}</p>
+        <div v-if="tevDegraded" class="tev-fix">
+          <p class="tev-warn">
+            Tev1 未就绪：{{ status?.tev.error || tevModule?.detail || "Ollama 未连接" }}
+          </p>
+          <button type="button" class="tev-btn" :disabled="tevBusy" @click="ensureTev">
+            {{ tevBusy ? "启动中…" : "一键启动 Tev1 / Ollama" }}
+          </button>
+          <p v-if="tevHint" class="tev-hint">{{ tevHint }}</p>
+        </div>
       </article>
 
       <article class="kpi kpi-agents">
@@ -490,6 +560,43 @@ function goConfigure() {
   place-items: center;
   background: #22c55e;
   color: #fff;
+}
+
+.tev-fix {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #e6edf5;
+}
+
+.tev-warn,
+.tev-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #ea580c;
+}
+
+.tev-hint {
+  margin-top: 6px;
+  color: #64748b;
+}
+
+.tev-btn {
+  margin-top: 8px;
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: #3b6ff5;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tev-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
 }
 
 .text-link,

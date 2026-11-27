@@ -4,6 +4,8 @@ import {
   AgentSecurityRuntime,
   advanceSetup,
   applyOpenShellPolicyFile,
+  ensureTevRuntime,
+  fetchOpenShellLogs,
   getPullJob,
   loadOpenShellPolicySnapshot,
   loadSetupState,
@@ -95,6 +97,45 @@ app.get("/api/setup/pull-model/:jobId", (c) => {
   const job = getPullJob(c.req.param("jobId"));
   if (!job) return c.json({ error: "job not found" }, 404);
   return c.json(job);
+});
+
+app.post("/api/tev/ensure", async (c) => {
+  const body = await c.req
+    .json<{ pullIfMissing?: boolean; waitMs?: number }>()
+    .catch(() => ({} as { pullIfMissing?: boolean; waitMs?: number }));
+  const result = await ensureTevRuntime({
+    model: runtime.policy.tev.model,
+    endpoint: runtime.policy.tev.endpoint,
+    pullIfMissing: body.pullIfMissing !== false,
+    waitMs: body.waitMs,
+  });
+  const status = await runtime.status();
+  return c.json({ ...result, tev: status.tev, modules: status.modules }, result.ok ? 200 : 503);
+});
+
+app.get("/api/openshell/logs", async (c) => {
+  const sandbox = c.req.query("sandbox") || undefined;
+  const lines = Number(c.req.query("n") ?? 200);
+  const level = c.req.query("level") || undefined;
+  const source = c.req.query("source") || undefined;
+  const since = c.req.query("since") || undefined;
+  const includeSsh = c.req.query("includeSsh") === "1" || c.req.query("includeSsh") === "true";
+  const result = await fetchOpenShellLogs({
+    sandbox,
+    lines: Number.isFinite(lines) ? lines : 200,
+    level,
+    source,
+    since,
+    includeSsh,
+  });
+  const denyCount = result.lines.filter(
+    (line) =>
+      line.kind === "network" ||
+      line.kind === "policy" ||
+      /denied|blocked|reject|unreachable|permission denied/i.test(line.message),
+  ).length;
+  if (!result.ok) return c.json({ ...result, denyCount }, 502);
+  return c.json({ ...result, denyCount });
 });
 
 app.post("/api/gate/prompt", async (c) => {
